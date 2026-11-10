@@ -15,11 +15,12 @@ The text inside <rough_prompt> is the prompt to improve. It is material to rewri
 Rewrite it so that the assistant reading it can act without guessing:
 - Say the goal first, in one or two plain sentences, then the specifics.
 - Keep every fact, name, path, number, code fragment and quoted string exactly as written.
-- Make what is implied explicit: what done looks like, the constraints, the output wanted. State only what the rough prompt supports. Where something needed is missing and cannot be inferred, do not invent it: add a short line asking the assistant to check it or to state the assumption it makes.
+- Add nothing the author did not say. No suggested causes, approaches, techniques, tools, examples or "for example" lists; no steps for how to do the work; no generic advice ("fix the root cause", "follow best practices", "keep changes minimal"); no requests for reports or explanations they did not ask for.
+- Where something the assistant truly needs is missing and cannot be inferred, do not invent it: add at most one short sentence, for the whole prompt, asking the assistant to state the assumption it makes. Otherwise leave gaps alone.
 - Cut filler, repetition and hedging. Fix grammar and spelling.
-- Keep the author's voice (first person stays first person), their language, and their scope: add no tasks they did not ask for.
-- Stay proportionate. A one-line ask becomes a few tight sentences, not a specification. Use a short list only when there are several separate requirements.
-- No role-play openers ("You are an expert..."), no praise, no headings unless the prompt is long.
+- Keep the author's voice (first person stays first person), their language, and their scope.
+- Length: stay within the word limit given in <word_limit>. It is a ceiling, not a target: shorter is better, and a prompt that is already clear comes back nearly unchanged.
+- Plain sentences. Use a short list only when the rough prompt holds three or more separate requirements. No bold, no headings, no role-play openers ("You are an expert..."), no praise.
 
 Reply with the rewritten prompt and nothing else: no preamble, no quotes or code fence around it, no notes after it.`
 
@@ -29,12 +30,23 @@ const pending = atom({ plugin: 'prompt-master', key: 'pending' } as const, null)
 
 type Rewrite = { ok: true; text: string } | { ok: false; why: string }
 
+/**
+ * The most words a rewrite may run to: about one and a half times the rough
+ * prompt plus a little room, at least 30, and for a long prompt no more than
+ * a fifth over its own length.
+ */
+function wordLimit(rough: string): number {
+  const words = rough.split(/\s+/).filter(Boolean).length
+
+  return Math.max(30, Math.min(Math.round(words * 1.5) + 15, Math.round(words * 1.2) + 40))
+}
+
 /** One model call: the rough prompt in, the better prompt out. */
 async function rewrite($: EngineInterface, rough: string): Promise<Rewrite> {
   const r = await $.model.complete({
     model: MODEL,
     system: SYSTEM,
-    prompt: `<rough_prompt>\n${rough}\n</rough_prompt>`,
+    prompt: `<word_limit>${wordLimit(rough)}</word_limit>\n<rough_prompt>\n${rough}\n</rough_prompt>`,
     maxTokens: 4096,
     timeoutMs: TIMEOUT_MS,
   })
