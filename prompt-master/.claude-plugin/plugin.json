@@ -1,0 +1,6 @@
+{
+  "name": "prompt-master",
+  "version": "0.1.0",
+  "description": "One-click rewrite of the rough prompt in the prompt box into a clearer, more complete one before you send it.",
+  "types": "./types/index.d.ts"
+}
