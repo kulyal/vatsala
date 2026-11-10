@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderSurface } from 'claude-code'
 
 import type { Phase } from '../types'
 
 const NAME = 'prompt-master'
+const PANE = 'prompt-master'
 // The model that does the rewriting: an alias or a full model id.
 const MODEL = 'sonnet'
 const TIMEOUT_MS = 60_000
@@ -73,24 +74,22 @@ async function rewrite($: EngineInterface, rough: string): Promise<Rewrite> {
     : { ok: true, text }
 }
 
-/** The button's work: rewrite the draft in the prompt box, in place. */
-async function run($: EngineInterface): Promise<void> {
+/** A failure, said where the person will see it. */
+function sorry($: EngineInterface, why: string): void {
+  $.ui.toast(`Prompt Master: ${why}.`)
+}
+
+/**
+ * Rewrites `rough` and hands the result over: into the prompt box when it
+ * still reads `draft` (the text the box held when asked), else offered with
+ * Send and Copy in the band and the pane.
+ */
+async function improve(
+  $: EngineInterface,
+  rough: string,
+  draft: string | null,
+): Promise<void> {
   if ((await read($, phase)) === 'working') {
-    return
-  }
-
-  const { text: draft } = await $.prompt.read()
-  const rough = draft.trim()
-
-  if (rough === '') {
-    $.ui.toast('Prompt Master: type a rough prompt first, then press the button.')
-
-    return
-  }
-
-  if (rough.startsWith('/')) {
-    $.ui.toast('Prompt Master: that is a slash command, not a prompt to rewrite.')
-
     return
   }
 
@@ -106,7 +105,7 @@ async function run($: EngineInterface): Promise<void> {
   }
 
   if (!result.ok) {
-    $.ui.toast(`Prompt Master: ${result.why}. Your draft is unchanged.`)
+    sorry($, `${result.why}. Your prompt is unchanged`)
 
     return
   }
@@ -114,11 +113,10 @@ async function run($: EngineInterface): Promise<void> {
   const better = result.text
   // The person may have kept typing while the model worked: their newer
   // words win, and the rewrite is offered rather than written over them.
-  const now = (await $.prompt.read()).text
-  const filled =
-    now === draft
-      ? await $.prompt.fill({ text: better, mode: 'replace' })
-      : { isFilled: false }
+  const isUntouched = draft !== null && (await $.prompt.read()).text === draft
+  const filled = isUntouched
+    ? await $.prompt.fill({ text: better, mode: 'replace' })
+    : { isFilled: false }
 
   if (filled.isFilled) {
     await update($, original, () => draft)
@@ -126,6 +124,47 @@ async function run($: EngineInterface): Promise<void> {
   } else {
     await update($, pending, () => better)
   }
+}
+
+/** The button's work: rewrite the draft in the prompt box, in place. */
+async function run($: EngineInterface): Promise<void> {
+  const { text: draft } = await $.prompt.read()
+  const rough = draft.trim()
+
+  if (rough === '') {
+    sorry($, 'the prompt box is empty here. Type the rough prompt in the Prompt Master panel, or send /prompt-master <rough prompt>')
+
+    return
+  }
+
+  if (rough.startsWith('/')) {
+    sorry($, 'that is a slash command, not a prompt to rewrite')
+
+    return
+  }
+
+  await improve($, rough, draft)
+}
+
+/** Sends an offered rewrite as the person's own prompt. */
+async function send($: EngineInterface, text: string): Promise<void> {
+  await update($, pending, () => null)
+  await $.prompt.submit({ text, asUser: true })
+}
+
+/** Copies an offered rewrite on the surface the press came from. */
+async function copy(
+  $: EngineInterface,
+  text: string,
+  surface: RenderSurface,
+): Promise<void> {
+  const copied = await $.ui.copy({ text, surface })
+  $.ui.toast(copied.isCopied ? 'Copied.' : 'Could not copy here.')
+}
+
+/** Opens the panel: the button's home where no band is drawn (a phone). */
+function openPane($: EngineInterface): Promise<unknown> {
+  return $.ui.open({ id: PANE, title: 'Prompt Master', rows: 12 })
 }
 
 export const register: Register = on => {
@@ -137,6 +176,23 @@ export const register: Register = on => {
       argumentHint: '<rough prompt>',
     })
 
+    // The band above the prompt is drawn by the terminal and the desktop app
+    // alone: anywhere else the panel carries the button.
+    // A reload runs this again with the clients already attached.
+    const surfaces = [e.surface, ...(await $.session.surfaces())]
+
+    if (surfaces.some(s => s !== null && s !== 'terminal' && s !== 'desktop')) {
+      void openPane($)
+    }
+
+    return next(e)
+  })
+
+  on('session.attach', ($, e, next) => {
+    if (e.surface !== 'terminal' && e.surface !== 'desktop') {
+      void openPane($)
+    }
+
     return next(e)
   })
 
@@ -145,8 +201,12 @@ export const register: Register = on => {
     const rough = e.args.trim()
 
     if (rough === '') {
+      const opened = await $.ui.open({ id: PANE, title: 'Prompt Master', rows: 12 })
+
       return {
-        text: 'Usage: /prompt-master <rough prompt>. Or type the prompt and press the Prompt Master button above the prompt box.',
+        text: opened.isPlaced
+          ? 'Prompt Master panel opened: type a rough prompt there and press Rewrite.'
+          : 'Usage: /prompt-master <rough prompt>',
         isPrivate: true,
       }
     }
@@ -210,34 +270,11 @@ export const register: Register = on => {
           <Text dimColor>Prompt Master's rewrite:</Text>
           <Text>{offered}</Text>
           <Box>
-            <Button
-              key="send"
-              label="Send"
-              variant="primary"
-              onPress={async () => {
-                await update($, pending, () => null)
-                await $.prompt.submit({ text: offered, asUser: true })
-              }}
-            />
+            <Button key="send" label="Send" variant="primary" onPress={() => send($, offered)} />
             <Text> </Text>
-            <Button
-              key="copy"
-              label="Copy"
-              onPress={async press => {
-                const copied = await $.ui.copy({
-                  text: offered,
-                  surface: press.surface,
-                })
-                $.ui.toast(copied.isCopied ? 'Copied.' : 'Could not copy here.')
-              }}
-            />
+            <Button key="copy" label="Copy" onPress={press => copy($, offered, press.surface)} />
             <Text> </Text>
-            <Button
-              key="dismiss"
-              label="Dismiss"
-              role="dismiss"
-              onPress={() => update($, pending, () => null)}
-            />
+            <Button key="dismiss" label="Dismiss" role="dismiss" onPress={() => update($, pending, () => null)} />
           </Box>
         </Box>
       )
@@ -247,13 +284,7 @@ export const register: Register = on => {
 
     return (
       <Box>
-        <Button
-          key="run"
-          label="✨ Prompt Master"
-          variant="primary"
-          hotkey="p"
-          onPress={() => run($)}
-        />
+        <Button key="run" label="✨ Prompt Master" variant="primary" hotkey="p" onPress={() => run($)} />
         {before !== null && <Text> </Text>}
         {before !== null && (
           <Button
@@ -265,6 +296,54 @@ export const register: Register = on => {
               await update($, original, () => null)
             }}
           />
+        )}
+      </Box>
+    )
+  })
+
+  // The panel: the same one click on every surface, a phone included, with a
+  // field of its own for where the mod cannot read the app's prompt box.
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Button, Input, Text } = $.ui.resolve(e)
+    const offered = await read($, pending)
+    const isWorking = (await read($, phase)) === 'working'
+
+    return (
+      <Box flexDirection="column">
+        <Input
+          key="rough"
+          rows={3}
+          placeholder="Type a rough prompt here"
+          submitLabel="rewrite"
+          onSubmit={value => {
+            const rough = value.trim()
+
+            if (rough === '') {
+              sorry($, 'type a rough prompt first')
+
+              return
+            }
+
+            void improve($, rough, null)
+          }}
+        />
+        <Button
+          key="run"
+          label="✨ Prompt Master: rewrite my prompt box"
+          variant="primary"
+          onPress={() => run($)}
+        />
+        {isWorking && <Text dimColor>Rewriting your prompt…</Text>}
+        {!isWorking && offered !== null && <Text dimColor>Rewrite:</Text>}
+        {!isWorking && offered !== null && <Text>{offered}</Text>}
+        {!isWorking && offered !== null && (
+          <Box>
+            <Button key="send" label="Send" variant="primary" onPress={() => send($, offered)} />
+            <Text> </Text>
+            <Button key="copy" label="Copy" onPress={press => copy($, offered, press.surface)} />
+            <Text> </Text>
+            <Button key="dismiss" label="Dismiss" role="dismiss" onPress={() => update($, pending, () => null)} />
+          </Box>
         )}
       </Box>
     )

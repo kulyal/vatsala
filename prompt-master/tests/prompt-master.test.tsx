@@ -111,3 +111,57 @@ test('a box that cannot be written offers the rewrite in the band', async ($, on
   expect(await ui.find({ key: 'run' })).toBeDefined()
   await ui.unmount()
 })
+
+const PANE = {
+  plugin: 'prompt-master',
+  component: 'Pane',
+  requestId: 'prompt-master',
+  props: {
+    title: 'Prompt Master',
+    isFocused: false,
+    bodyColumns: 40,
+    placement: 'inline',
+    scroll: { offset: 0, bodyRows: 12 },
+    view: {},
+  },
+} as const
+
+test('on a phone the panel takes a rough prompt and offers the rewrite to send', async ($, on) => {
+  const sent: string[] = []
+  // A phone's own composer: the mod reads nothing from it and writes nothing.
+  on('prompt.read', () => ({ value: { text: '', cursor: 0 } }))
+  on('prompt.fill', () => ({ isFilled: false, refusal: 'no_composer' }))
+  on('prompt.submit', (_, e) => {
+    sent.push(e.text)
+
+    return { text: e.text }
+  })
+  on('model.complete', () => ({
+    value: { isAnswered: true, text: 'Better prompt.', usage: USAGE },
+  }))
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'mobile' })
+
+  expect(await ui.find({ key: 'run' })).toBeDefined()
+  await ui.input({ key: 'rough', text: 'fix login bug' })
+  expect((await ui.find({ type: 'Text', text: /Better/ }))?.text).toBe(
+    'Better prompt.',
+  )
+  await ui.press({ key: 'send' })
+  expect(sent).toEqual(['Better prompt.'])
+  expect(await ui.find({ key: 'send' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a phone joining the session opens the panel', async ($, on) => {
+  const opened: string[] = []
+  on('ui.open', (_, e) => {
+    opened.push(e.id)
+
+    return { value: { isPlaced: true } }
+  })
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+
+  await $.session.attach({ surface: 'mobile', clientId: 'mobile:default' })
+  expect(opened).toEqual(['prompt-master'])
+})
